@@ -76,7 +76,6 @@ impl SpoofAnalysis {
     }
 
     fn output_stats(&self) {
-        // Total IPs, spoofed/non spoofed breakdown
         let spoofed = self.ip_ttls
             .values()
             .filter(|x| x.spoofed)
