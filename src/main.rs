@@ -1,3 +1,5 @@
+#![feature(ip)]
+
 use anyhow::{Result, Context};
 use clap::Parser;
 use etherparse::*;
@@ -46,7 +48,14 @@ impl AnalyzedIp {
     fn add_ttl(&mut self, ttl: u8) {
         self.ttl_min = cmp::min(self.ttl_min, ttl);
         self.ttl_max = cmp::max(self.ttl_max, ttl);
-        self.spoofed = (self.ttl_max - self.ttl_min) > 3;
+        if !self.spoofed {
+            self.check_spoofed();
+        }
+    }
+
+    fn check_spoofed(&mut self) -> bool {
+        self.spoofed = !(self.ip.is_global() && (self.ttl_max - self.ttl_min) < 5);
+        return self.spoofed;
     }
 }
 
@@ -154,4 +163,39 @@ fn main() -> Result<()> {
     analysis.output_stats();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::AnalyzedIp;
+    use std::net::IpAddr;
+
+    #[test]
+    fn normal_ttl() {
+        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50);
+        ip.add_ttl(51);
+        ip.add_ttl(50);
+        ip.add_ttl(52);
+        assert_eq!(false, ip.check_spoofed());
+    }
+
+    #[test]
+    fn spoofed_ttl() {
+        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50);
+        ip.add_ttl(50);
+        ip.add_ttl(55);
+        assert_eq!(true, ip.check_spoofed());
+    }
+
+    #[test]
+    fn private_ip() {
+        let mut ip = AnalyzedIp::new(IpAddr::from([192, 168, 1, 1]), 50);
+        assert_eq!(true, ip.check_spoofed());
+
+        let mut ip = AnalyzedIp::new(IpAddr::from([250, 0, 1, 2]), 50);
+        assert_eq!(true, ip.check_spoofed());
+
+        let mut ip = AnalyzedIp::new(IpAddr::from([169, 254, 169, 254]), 50);
+        assert_eq!(true, ip.check_spoofed());
+    }
 }
