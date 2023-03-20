@@ -22,7 +22,7 @@ struct Args {
     file: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct AnalyzedIp {
     ip: IpAddr,
     ttl_min: u8,
@@ -32,6 +32,15 @@ struct AnalyzedIp {
 
 struct SpoofAnalysis {
     ip_ttls: HashMap<IpAddr, AnalyzedIp>,
+    ttl_distribution: Vec<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OutputAnalysis {
+    total: usize,
+    spoofed: usize,
+    ttl_distribution: Vec<u64>,
+    ips: Vec<AnalyzedIp>,
 }
 
 impl AnalyzedIp {
@@ -62,7 +71,10 @@ impl AnalyzedIp {
 impl SpoofAnalysis {
 
     fn new() -> SpoofAnalysis {
-        SpoofAnalysis { ip_ttls: HashMap::new() }
+        SpoofAnalysis {
+            ip_ttls: HashMap::new(),
+            ttl_distribution: vec![0; 255],
+        }
     }
 
     fn add_ip(&mut self, ip: IpAddr, ttl: u8) {
@@ -70,32 +82,35 @@ impl SpoofAnalysis {
             .entry(ip)
             .or_insert(AnalyzedIp::new(ip, ttl));
         (*ip).add_ttl(ttl);
+        self.ttl_distribution[ttl as usize] += 1;
     }
 
     fn write_to_file(&self, file_path: &str) -> Result<()> {
-        let ip_vals = &self.ip_ttls.values().collect::<Vec<_>>();
+        let output_stats = self.output_stats();
 
         std::fs::create_dir_all("out/")?;
         std::fs::write(
             format!("out/{}.json", file_path),
-            serde_json::to_string_pretty(ip_vals)?
+            serde_json::to_string_pretty(&output_stats)?
         )?;
 
         Ok(())
     }
 
-    fn output_stats(&self) {
+    fn output_stats(&self) -> OutputAnalysis {
+        let ips = self.ip_ttls.values().map(|x| x.clone()).collect::<Vec<_>>();
         let spoofed = self.ip_ttls
             .values()
             .filter(|x| x.spoofed)
             .count();
         let total = self.ip_ttls.values().count();
-        println!(
-            "Total IPs: {}\nSpoofed IPs: {}\nNon-spoofed IPs: {}",
+
+        return OutputAnalysis {
+            ips,
             total,
             spoofed,
-            total - spoofed
-        );
+            ttl_distribution: self.ttl_distribution.clone(),
+        };
     }
 }
 
@@ -160,7 +175,6 @@ fn main() -> Result<()> {
         .to_str()
         .context("Invalid file name")?;
     analysis.write_to_file(output_filename)?;
-    analysis.output_stats();
 
     Ok(())
 }
