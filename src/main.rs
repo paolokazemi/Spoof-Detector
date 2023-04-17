@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn normal_ttl() {
-        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50);
+        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50, false);
         ip.add_ttl(51);
         ip.add_ttl(50);
         ip.add_ttl(52);
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn spoofed_ttl() {
-        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50);
+        let mut ip = AnalyzedIp::new(IpAddr::from([1, 1, 1, 1]), 50, false);
         ip.add_ttl(50);
         ip.add_ttl(55);
         assert_eq!(true, ip.check_spoofed());
@@ -201,13 +201,25 @@ mod tests {
 
     #[test]
     fn private_ip() {
-        let mut ip = AnalyzedIp::new(IpAddr::from([192, 168, 1, 1]), 50);
+        let mut ip = AnalyzedIp::new(IpAddr::from([192, 168, 1, 1]), 50, false);
         assert_eq!(true, ip.check_spoofed());
 
-        let mut ip = AnalyzedIp::new(IpAddr::from([250, 0, 1, 2]), 50);
+        let mut ip = AnalyzedIp::new(IpAddr::from([250, 0, 1, 2]), 50, false);
         assert_eq!(true, ip.check_spoofed());
 
-        let mut ip = AnalyzedIp::new(IpAddr::from([169, 254, 169, 254]), 50);
+        let mut ip = AnalyzedIp::new(IpAddr::from([169, 254, 169, 254]), 50, false);
         assert_eq!(true, ip.check_spoofed());
+    }
+
+    #[test]
+    fn private_anon_ip() {
+        let mut ip = AnalyzedIp::new(IpAddr::from([192, 168, 1, 1]), 50, true);
+        assert_eq!(false, ip.check_spoofed());
+
+        let mut ip = AnalyzedIp::new(IpAddr::from([250, 0, 1, 2]), 50, true);
+        assert_eq!(false, ip.check_spoofed());
+
+        let mut ip = AnalyzedIp::new(IpAddr::from([169, 254, 169, 254]), 50, true);
+        assert_eq!(false, ip.check_spoofed());
     }
 }
