@@ -20,6 +20,9 @@ struct Args {
     /// File path of the PCAP file
     #[arg(short, long)]
     file: String,
+    /// Whether the IPs are anonymized or not
+    #[arg(short, long)]
+    anon: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -28,11 +31,13 @@ struct AnalyzedIp {
     ttl_min: u8,
     ttl_max: u8,
     spoofed: bool,
+    anonymized: bool,
 }
 
 struct SpoofAnalysis {
     ip_ttls: HashMap<IpAddr, AnalyzedIp>,
     ttl_distribution: Vec<u64>,
+    anonymized_ips: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -45,12 +50,13 @@ struct OutputAnalysis {
 
 impl AnalyzedIp {
 
-    fn new(ip: IpAddr, ttl: u8) -> AnalyzedIp {
+    fn new(ip: IpAddr, ttl: u8, anonymized: bool) -> AnalyzedIp {
         AnalyzedIp {
             ip,
             ttl_min: ttl,
             ttl_max: ttl,
             spoofed: false,
+            anonymized,
         }
     }
 
@@ -63,24 +69,25 @@ impl AnalyzedIp {
     }
 
     fn check_spoofed(&mut self) -> bool {
-        self.spoofed = !(self.ip.is_global() && (self.ttl_max - self.ttl_min) < 5);
+        self.spoofed = !((self.ip.is_global() || self.anonymized) && (self.ttl_max - self.ttl_min) < 5);
         return self.spoofed;
     }
 }
 
 impl SpoofAnalysis {
 
-    fn new() -> SpoofAnalysis {
+    fn new(anonymized_ips: bool) -> SpoofAnalysis {
         SpoofAnalysis {
             ip_ttls: HashMap::new(),
             ttl_distribution: vec![0; 255],
+            anonymized_ips,
         }
     }
 
     fn add_ip(&mut self, ip: IpAddr, ttl: u8) {
         let ip = self.ip_ttls
             .entry(ip)
-            .or_insert(AnalyzedIp::new(ip, ttl));
+            .or_insert(AnalyzedIp::new(ip, ttl, self.anonymized_ips));
         (*ip).add_ttl(ttl);
         self.ttl_distribution[ttl as usize] += 1;
     }
@@ -121,7 +128,7 @@ fn main() -> Result<()> {
     let mut reader = create_reader(65536, file)?;
 
     let mut linktype = Linktype::ETHERNET;
-    let mut analysis = SpoofAnalysis::new();
+    let mut analysis = SpoofAnalysis::new(args.anon);
 
     loop {
         match reader.next() {
@@ -139,22 +146,13 @@ fn main() -> Result<()> {
                         match pkt_data {
                             PacketData::L2(eth_data) => {
                                 let pkt_val = PacketHeaders::from_ethernet_slice(eth_data)?;
-                                match pkt_val.ip.context("Invalid packet")? {
-                                    IpHeader::Version4(ip, _) => {
-                                        analysis.add_ip(
-                                            IpAddr::from(ip.source),
-                                            ip.time_to_live,
-                                        );
-                                    },
-                                    IpHeader::Version6(ip, _) => {
-                                        analysis.add_ip(
-                                            IpAddr::from(ip.source),
-                                            ip.hop_limit,
-                                        );
-                                    }
-                                }
+                                let (ip, ttl) = match pkt_val.ip.context("Invalid packet")? {
+                                    IpHeader::Version4(ip, _) => (IpAddr::from(ip.source), ip.time_to_live),
+                                    IpHeader::Version6(ip, _) => (IpAddr::from(ip.source), ip.hop_limit),
+                                };
+                                analysis.add_ip(ip, ttl);
                             },
-                            _ => (),
+                            _ => unreachable!(),
                         }
                     },
                     PcapBlockOwned::NG(_) => unreachable!(),
