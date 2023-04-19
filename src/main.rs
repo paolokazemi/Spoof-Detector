@@ -79,7 +79,7 @@ impl SpoofAnalysis {
     fn new(anonymized_ips: bool) -> SpoofAnalysis {
         SpoofAnalysis {
             ip_ttls: HashMap::new(),
-            ttl_distribution: vec![0; 255],
+            ttl_distribution: vec![0; 256],
             anonymized_ips,
         }
     }
@@ -121,13 +121,36 @@ impl SpoofAnalysis {
     }
 }
 
+fn analyze_packet(pkt_data: pcap_parser::data::PacketData, analysis: &mut SpoofAnalysis) -> Result<()> {
+    match pkt_data {
+        PacketData::L2(eth_data) => {
+            let pkt_val = PacketHeaders::from_ethernet_slice(eth_data)?;
+            match pkt_val.ip {
+                Some(IpHeader::Version4(ip, _)) => {
+                    let (ip, ttl) = (IpAddr::from(ip.source), ip.time_to_live);
+                    analysis.add_ip(ip, ttl);
+                },
+                Some(IpHeader::Version6(ip, _)) => {
+                    let (ip, ttl) = (IpAddr::from(ip.source), ip.hop_limit);
+                    analysis.add_ip(ip, ttl);
+                },
+                _ => (),
+            }
+        },
+        _ => unreachable!(),
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
     let file = File::open(&args.file)?;
     let mut reader = create_reader(65536, file)?;
 
-    let mut linktype = Linktype::ETHERNET;
+    let mut linktype = Linktype::ETHERNET;  // Legacy PCAP files
+    let mut if_linktypes = Vec::new();      // PCAP-NG files
     let mut analysis = SpoofAnalysis::new(args.anon);
 
     loop {
@@ -142,20 +165,39 @@ fn main() -> Result<()> {
                             b.data,
                             linktype,
                             b.caplen as usize
-                        ).context("Invalid packet")?;
-                        match pkt_data {
-                            PacketData::L2(eth_data) => {
-                                let pkt_val = PacketHeaders::from_ethernet_slice(eth_data)?;
-                                let (ip, ttl) = match pkt_val.ip.context("Invalid packet")? {
-                                    IpHeader::Version4(ip, _) => (IpAddr::from(ip.source), ip.time_to_live),
-                                    IpHeader::Version6(ip, _) => (IpAddr::from(ip.source), ip.hop_limit),
-                                };
-                                analysis.add_ip(ip, ttl);
-                            },
-                            _ => unreachable!(),
-                        }
+                        ).context("Legacy PCAP Error get_packetdata")?;
+                        analyze_packet(pkt_data, &mut analysis)?;
                     },
-                    PcapBlockOwned::NG(_) => unreachable!(),
+                    PcapBlockOwned::NG(Block::SectionHeader(ref _shb)) => {
+                        if_linktypes = Vec::new();
+                    },
+                    PcapBlockOwned::NG(Block::InterfaceDescription(ref idb)) => {
+                        if_linktypes.push(idb.linktype);
+                    },
+                    PcapBlockOwned::NG(Block::EnhancedPacket(ref epb)) => {
+                        assert!((epb.if_id as usize) < if_linktypes.len());
+                        let linktype = if_linktypes[epb.if_id as usize];
+                        let pkt_data = pcap_parser::data::get_packetdata(
+                            epb.data,
+                            linktype,
+                            epb.caplen as usize
+                        ).context("PCAP-NG EnhancedPacket Error get_packetdata")?;
+                        analyze_packet(pkt_data, &mut analysis)?;
+                    },
+                    PcapBlockOwned::NG(Block::SimplePacket(ref spb)) => {
+                        assert!(if_linktypes.len() > 0);
+                        let linktype = if_linktypes[0];
+                        let blen = (spb.block_len1 - 16) as usize;
+                        let pkt_data = pcap_parser::data::get_packetdata(
+                            spb.data,
+                            linktype,
+                            blen
+                        ).context("PCAP-NG SimplePacket Error get_packetdata")?;
+                        analyze_packet(pkt_data, &mut analysis)?;
+                    },
+                    PcapBlockOwned::NG(_) => {
+                        eprintln!("unsupported block");
+                    },
                 }
                 reader.consume(offset);
             },
