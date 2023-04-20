@@ -152,6 +152,7 @@ fn main() -> Result<()> {
     let mut linktype = Linktype::ETHERNET;  // Legacy PCAP files
     let mut if_linktypes = Vec::new();      // PCAP-NG files
     let mut analysis = SpoofAnalysis::new(args.anon);
+    let mut consecutive_errors = 0;
 
     loop {
         match reader.next() {
@@ -200,9 +201,16 @@ fn main() -> Result<()> {
                     },
                 }
                 reader.consume(offset);
+                consecutive_errors = 0;
             },
             Err(PcapError::Eof) => break,
             Err(PcapError::Incomplete) => {
+                // If the last packet is not complete, the reader might get stuck in a loop.
+                // In that case, after too many consecutive errors we stop the execution.
+                consecutive_errors += 1;
+                if consecutive_errors > 1000 {
+                    break;
+                }
                 reader.refill().unwrap();
             },
             Err(e) => panic!("Error reading file: {:?}", e),
