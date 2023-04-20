@@ -92,6 +92,34 @@ impl SpoofAnalysis {
         self.ttl_distribution[ttl as usize] += 1;
     }
 
+    fn analyze_packet_headers(&mut self, pkt_headers: PacketHeaders) {
+        match pkt_headers.ip {
+            Some(IpHeader::Version4(ip, _)) => {
+                let (ip, ttl) = (IpAddr::from(ip.source), ip.time_to_live);
+                self.add_ip(ip, ttl);
+            },
+            Some(IpHeader::Version6(ip, _)) => {
+                let (ip, ttl) = (IpAddr::from(ip.source), ip.hop_limit);
+                self.add_ip(ip, ttl);
+            },
+            _ => (),
+        }
+    }
+
+    fn analyze_packet(&mut self, pkt_data: PacketData) -> Result<()> {
+        match pkt_data {
+            PacketData::L2(eth_data) => self.analyze_packet_headers(
+                PacketHeaders::from_ethernet_slice(eth_data)?
+            ),
+            PacketData::L3(_, ip_data) => self.analyze_packet_headers(
+                PacketHeaders::from_ip_slice(ip_data)?
+            ),
+            _ => todo!(),
+        };
+
+        Ok(())
+    }
+
     fn write_to_file(&self, file_path: &str) -> Result<()> {
         let output_stats = self.output_stats();
 
@@ -121,36 +149,6 @@ impl SpoofAnalysis {
     }
 }
 
-fn analyze_packet_headers(pkt: PacketHeaders, analysis: &mut SpoofAnalysis) {
-    match pkt.ip {
-        Some(IpHeader::Version4(ip, _)) => {
-            let (ip, ttl) = (IpAddr::from(ip.source), ip.time_to_live);
-            analysis.add_ip(ip, ttl);
-        },
-        Some(IpHeader::Version6(ip, _)) => {
-            let (ip, ttl) = (IpAddr::from(ip.source), ip.hop_limit);
-            analysis.add_ip(ip, ttl);
-        },
-        _ => (),
-    }
-}
-
-fn analyze_packet(pkt_data: pcap_parser::data::PacketData, analysis: &mut SpoofAnalysis) -> Result<()> {
-    match pkt_data {
-        PacketData::L2(eth_data) => {
-            let pkt = PacketHeaders::from_ethernet_slice(eth_data)?;
-            analyze_packet_headers(pkt, analysis);
-        },
-        PacketData::L3(_, ip_data) => {
-            let pkt = PacketHeaders::from_ip_slice(ip_data)?;
-            analyze_packet_headers(pkt, analysis);
-        },
-        _ => unreachable!(),
-    };
-
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -175,7 +173,7 @@ fn main() -> Result<()> {
                             linktype,
                             b.caplen as usize
                         ).context("Legacy PCAP Error get_packetdata")?;
-                        analyze_packet(pkt_data, &mut analysis)?;
+                        analysis.analyze_packet(pkt_data)?;
                     },
                     PcapBlockOwned::NG(Block::SectionHeader(ref _shb)) => {
                         if_linktypes = Vec::new();
@@ -191,7 +189,7 @@ fn main() -> Result<()> {
                             linktype,
                             epb.caplen as usize
                         ).context("PCAP-NG EnhancedPacket Error get_packetdata")?;
-                        analyze_packet(pkt_data, &mut analysis)?;
+                        analysis.analyze_packet(pkt_data)?;
                     },
                     PcapBlockOwned::NG(Block::SimplePacket(ref spb)) => {
                         assert!(if_linktypes.len() > 0);
@@ -202,7 +200,7 @@ fn main() -> Result<()> {
                             linktype,
                             blen
                         ).context("PCAP-NG SimplePacket Error get_packetdata")?;
-                        analyze_packet(pkt_data, &mut analysis)?;
+                        analysis.analyze_packet(pkt_data)?;
                     },
                     PcapBlockOwned::NG(_) => {
                         eprintln!("unsupported block");
