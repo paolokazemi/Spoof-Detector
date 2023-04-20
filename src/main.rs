@@ -121,24 +121,32 @@ impl SpoofAnalysis {
     }
 }
 
+fn analyze_packet_headers(pkt: PacketHeaders, analysis: &mut SpoofAnalysis) {
+    match pkt.ip {
+        Some(IpHeader::Version4(ip, _)) => {
+            let (ip, ttl) = (IpAddr::from(ip.source), ip.time_to_live);
+            analysis.add_ip(ip, ttl);
+        },
+        Some(IpHeader::Version6(ip, _)) => {
+            let (ip, ttl) = (IpAddr::from(ip.source), ip.hop_limit);
+            analysis.add_ip(ip, ttl);
+        },
+        _ => (),
+    }
+}
+
 fn analyze_packet(pkt_data: pcap_parser::data::PacketData, analysis: &mut SpoofAnalysis) -> Result<()> {
     match pkt_data {
         PacketData::L2(eth_data) => {
-            let pkt_val = PacketHeaders::from_ethernet_slice(eth_data)?;
-            match pkt_val.ip {
-                Some(IpHeader::Version4(ip, _)) => {
-                    let (ip, ttl) = (IpAddr::from(ip.source), ip.time_to_live);
-                    analysis.add_ip(ip, ttl);
-                },
-                Some(IpHeader::Version6(ip, _)) => {
-                    let (ip, ttl) = (IpAddr::from(ip.source), ip.hop_limit);
-                    analysis.add_ip(ip, ttl);
-                },
-                _ => (),
-            }
+            let pkt = PacketHeaders::from_ethernet_slice(eth_data)?;
+            analyze_packet_headers(pkt, analysis);
+        },
+        PacketData::L3(_, ip_data) => {
+            let pkt = PacketHeaders::from_ip_slice(ip_data)?;
+            analyze_packet_headers(pkt, analysis);
         },
         _ => unreachable!(),
-    }
+    };
 
     Ok(())
 }
